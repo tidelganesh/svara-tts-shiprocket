@@ -87,6 +87,7 @@ COPY tts_engine/ ./tts_engine/
 COPY api/ ./api/
 COPY scripts/ ./scripts/
 COPY supervisord.conf /etc/supervisor/conf.d/svara-tts.conf
+COPY handler.py ./handler.py
 
 # Make scripts executable
 RUN chmod +x ./scripts/*.sh ./scripts/*.py
