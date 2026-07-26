@@ -5,20 +5,30 @@ import asyncio
 from starlette.testclient import TestClient
 import subprocess, time, requests
 
-vllm_process = subprocess.Popen([
-    "python3", "-m", "vllm.entrypoints.openai.api_server",
-    "--model", "kenpath/svara-tts-v1",
-    "--port", "8000",
-])
+vllm_process = None
 
-# wait for vLLM to be ready before accepting jobs
-for _ in range(60):
-    try:
-        if requests.get("http://localhost:8000/health").status_code == 200:
-            break
-    except requests.exceptions.ConnectionError:
-        pass
-    time.sleep(2)
+def ensure_vllm_started():
+    global vllm_process
+    if vllm_process is not None and vllm_process.poll() is None:
+        return
+
+    vllm_process = subprocess.Popen([
+        "python3", "-m", "vllm.entrypoints.openai.api_server",
+        "--model", "kenpath/svara-tts-v1",
+        "--port", "8000",
+    ])
+
+    # wait until healthy
+    for _ in range(60):
+        try:
+            r = requests.get("http://localhost:8000/health", timeout=1)
+            if r.status_code == 200:
+                return
+        except Exception:
+            pass
+        time.sleep(2)
+
+    raise RuntimeError("vLLM failed to become healthy")
 
 # ... rest of handler.py as before ...
 # Import the existing FastAPI app — reuses all the model-loading,
@@ -30,6 +40,7 @@ from api.server import app
 client = TestClient(app)
 
 def handler(event):
+    ensure_vllm_started()
     inp = event["input"]
     text = inp["text"]
     voice_id = inp.get("voice_id", "hi_male")
