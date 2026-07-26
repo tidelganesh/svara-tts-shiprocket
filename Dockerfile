@@ -57,7 +57,7 @@ FROM pytorch-builder AS vllm-builder
 # Set environment variables for faster compilation if building from source
 ENV MAX_JOBS=4
 ENV NVCC_THREADS=4
-ENV TORCH_CUDA_ARCH_LIST="8.9;9.0"
+ENV TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0"
 
 # Install vLLM (will use the PyTorch with CUDA 12.8 we already installed)
 # Try to get pre-built wheel first, if not available it will build from source
@@ -76,7 +76,7 @@ RUN pip3 install -r requirements.txt
 
 # Install additional dependencies for audio processing
 RUN pip3 install soundfile numpy
-
+RUN pip3 install runpod
 # ============================================================================
 # Stage 4: Final application image
 # ============================================================================
@@ -104,5 +104,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
 # Start supervisord to manage all processes
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/svara-tts.conf"]
-
+#CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/svara-tts.conf"]
+CMD ["python3", "-u", "handler.py"].
