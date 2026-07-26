@@ -38,6 +38,14 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 RUN python3 -m pip install --upgrade pip setuptools wheel \
     && pip3 install uv
 
+# keep torch cu128 (CUDA 12.8)
+RUN pip3 install --no-cache-dir torch torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/cu128
+
+# add/pin vLLM explicitly to avoid pulling a CUDA-13 build
+RUN pip3 install --no-cache-dir "vllm==0.6.3"
+
+
 # Set working directory
 WORKDIR /app
 
