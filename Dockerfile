@@ -105,4 +105,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
 
 # Start supervisord to manage all processes
 #CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/svara-tts.conf"]
-CMD ["python3", "-u", "handler.py"].
+CMD ["python3", "-u", "handler.py"]
