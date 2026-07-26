@@ -3,7 +3,24 @@ import runpod
 import base64
 import asyncio
 from starlette.testclient import TestClient
+import subprocess, time, requests
 
+vllm_process = subprocess.Popen([
+    "python3", "-m", "vllm.entrypoints.openai.api_server",
+    "--model", "kenpath/svara-tts-v1",
+    "--port", "8000",
+])
+
+# wait for vLLM to be ready before accepting jobs
+for _ in range(60):
+    try:
+        if requests.get("http://localhost:8000/health").status_code == 200:
+            break
+    except requests.exceptions.ConnectionError:
+        pass
+    time.sleep(2)
+
+# ... rest of handler.py as before ...
 # Import the existing FastAPI app — reuses all the model-loading,
 # vLLM calls, and SNAC decoding logic already built into api/server.py
 from api.server import app
