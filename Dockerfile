@@ -48,6 +48,7 @@ FROM base AS pytorch-builder
 
 # After (fixed — forces all three from the same CUDA-tagged index)
 RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
 # ============================================================================
 # Stage 2: Install vLLM with CUDA 12.8 support
 # ============================================================================
