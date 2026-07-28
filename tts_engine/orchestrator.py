@@ -7,7 +7,7 @@ import logging
 from .transports import VLLMCompletionsTransport, VLLMCompletionsTransportAsync
 from .mapper import SvaraMapper, extract_custom_token_numbers
 from .snac_codec import SNACCodec
-from .utils import svara_prompt, create_speaker_id
+from .utils import svara_prompt, create_speaker_id, END_OF_SPEECH_ID
 from .buffers import AudioBuffer, SyncFuture
 from .timing import track_time
 
@@ -73,6 +73,7 @@ class SvaraTTSOrchestrator:
         # Use provided prompt or build from text + speaker_id
         if prompt is None:
             prompt = svara_prompt(text, self.speaker_id)
+        gen_kwargs.setdefault("stop_token_ids", [END_OF_SPEECH_ID])
         
         # Log prompt details
         if isinstance(prompt, list):
@@ -138,6 +139,7 @@ class SvaraTTSOrchestrator:
         # Use provided prompt or build from text + speaker_id
         if prompt is None:
             prompt = svara_prompt(text, self.speaker_id)
+        gen_kwargs.setdefault("stop_token_ids", [END_OF_SPEECH_ID])
         
         # Log prompt details
         if isinstance(prompt, list):
