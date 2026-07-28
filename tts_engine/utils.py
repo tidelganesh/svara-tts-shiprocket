@@ -20,7 +20,7 @@ END_OF_HUMAN    = "<custom_token_4>" # 128260
 START_OF_AI     = "<custom_token_5>" # 128261
 END_OF_AI       = "<custom_token_6>" # 128262
 PAD_TOKEN       = "<custom_token_7>" # 128263
-
+END_OF_SPEECH_ID = 128258  # numeric token ID for END_OF_SPEECH / <custom_token_2>
 
 _DEFAULT_SEPARATORS = [
     "\n\n",   # paragraphs
