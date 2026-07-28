@@ -54,6 +54,26 @@ orchestrator: Optional[SvaraTTSOrchestrator] = None
 tokenizer = None  # For zero-shot voice cloning
 voice_clone_cache: Dict[str, Dict[str, Any]] = {}
 
+WARMUP_PROMPTS = [
+    "வணக்கம்!",
+    "நான் உங்களுக்கு எப்படி உதவ முடியும்?",
+    "எங்கள் விலைப்பட்டியல் மற்றும் சேவைகள் பற்றி மேலும் விவரங்களை தெரிந்து கொள்ள விரும்புகிறீர்களா?",
+]
+
+async def warmup_tts_engine():
+    logger.info("Starting TTS engine warmup...")
+    for voice in ["Tamil(Female)"]:  # add other voices you actually use in production
+        for text in WARMUP_PROMPTS:
+            try:
+                await run_tts_request(
+                    text=text,
+                    voice=voice,
+                    repetition_penalty=1.2,   # match SvaraTTSService default exactly
+                    max_tokens=150 + len(text) * 15,  # match _estimate_max_tokens
+                )
+            except Exception as e:
+                logger.warning(f"Warmup request failed (non-fatal): {e}")
+    logger.info("TTS engine warmup complete")
 
 # ============================================================================
 # Application Lifecycle
@@ -110,16 +130,30 @@ app = FastAPI(
 # Endpoints
 # ============================================================================
 
+# @app.get("/health")
+# async def health_check():
+#     """Health check endpoint for container orchestration."""
+#     return {
+#         "status": "healthy",
+#         "model": VLLM_MODEL,
+#         "vllm_url": VLLM_BASE_URL,
+#     }
+
+app_ready = False
+
 @app.get("/health")
-async def health_check():
-    """Health check endpoint for container orchestration."""
-    return {
-        "status": "healthy",
-        "model": VLLM_MODEL,
-        "vllm_url": VLLM_BASE_URL,
-    }
+async def health():
+    if not app_ready:
+        return JSONResponse(status_code=503, content={"status": "warming_up"})
+    return {"status": "healthy"}
 
-
+@app.on_event("startup")
+async def on_startup():
+    await wait_for_vllm_engine_ready()
+    await warmup_tts_engine()
+    global app_ready
+    app_ready = True
+    
 @app.get("/v1/voices", response_model=VoicesResponse)
 async def get_voices(model_id: Optional[str] = None):
     """
