@@ -41,7 +41,9 @@ def svara_prompt(text: str, speaker_id: str) -> str:
         text: The text to synthesize.
         speaker_id: The speaker identifier in "Language (Gender)" format (e.g., "Hindi (Male)").
     """
-    prompt = f"{START_OF_HUMAN}{AUDIO} {speaker_id}: {text}{EOT_ID}{END_OF_HUMAN}{START_OF_AI}"
+    #prompt = f"{START_OF_HUMAN}{AUDIO} {speaker_id}: {text}{EOT_ID}{END_OF_HUMAN}{START_OF_AI}"
+    prompt = f"{START_OF_HUMAN}{AUDIO} {speaker_id}: {text}{EOT_ID}{END_OF_HUMAN}{START_OF_AI}{START_OF_SPEECH}"
+
     print(f"Prompt: {prompt}")
     return prompt
 
