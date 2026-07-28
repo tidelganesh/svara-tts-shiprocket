@@ -15,7 +15,7 @@ from uuid import uuid4
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Response, File, UploadFile, Form
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 
 
 logging.basicConfig(level=logging.INFO)
@@ -49,31 +49,69 @@ TTS_DEVICE = os.getenv("TTS_DEVICE", None)  # None = auto-detect (CUDA/MPS/CPU)
 VLLM_MAX_MODEL_LEN = int(os.getenv("VLLM_MAX_MODEL_LEN", "2048"))
 MAX_GENERATION_TOKENS = int(os.getenv("TTS_MAX_TOKENS", str(VLLM_MAX_MODEL_LEN)))
 
-# Global instances (initialized in lifespan)
-orchestrator: Optional[SvaraTTSOrchestrator] = None
-tokenizer = None  # For zero-shot voice cloning
-voice_clone_cache: Dict[str, Dict[str, Any]] = {}
+# Voices to warm up on startup (should cover every voice actually used in
+# production so their sampling-kernel shapes get JIT-compiled before real
+# traffic arrives, not on the first live call).
+WARMUP_VOICES = [v.strip() for v in os.getenv("WARMUP_VOICES", "Tamil(Female)").split(",") if v.strip()]
 
+# Prompts of varying length used for warmup — short greeting-style plus a
+# longer sentence, since different shapes can trigger different lazy JIT
+# compiles inside vLLM/Triton.
 WARMUP_PROMPTS = [
     "வணக்கம்!",
     "நான் உங்களுக்கு எப்படி உதவ முடியும்?",
     "எங்கள் விலைப்பட்டியல் மற்றும் சேவைகள் பற்றி மேலும் விவரங்களை தெரிந்து கொள்ள விரும்புகிறீர்களா?",
 ]
 
+# Match SvaraTTSService's production defaults exactly so warmup exercises
+# the same sampling-kernel code path as real calls.
+WARMUP_REPETITION_PENALTY = 1.2
+
+# Global instances (initialized in lifespan)
+orchestrator: Optional[SvaraTTSOrchestrator] = None
+tokenizer = None  # For zero-shot voice cloning
+voice_clone_cache: Dict[str, Dict[str, Any]] = {}
+
+# Flips to True only after the orchestrator is initialized AND warmup has
+# finished running real requests through vLLM. /health stays 503 until then
+# so upstream routing (Vobiz / load balancer) won't send live calls into a
+# cold engine that still needs to JIT-compile sampling kernels.
+app_ready = False
+
+
 async def warmup_tts_engine():
+    """
+    Fire a few real TTS requests through the orchestrator at startup,
+    using the exact sampling parameters production traffic uses.
+
+    This forces vLLM/Triton to JIT-compile kernels like `_penalties_kernel`
+    and `_temperature_kernel` during startup (invisible to callers) instead
+    of on the first live call, which otherwise shows up as a multi-second
+    latency spike / choppy-sounding first response.
+
+    Failures here are logged but non-fatal — we don't want a warmup hiccup
+    to prevent the server from ever becoming ready.
+    """
     logger.info("Starting TTS engine warmup...")
-    for voice in ["Tamil(Female)"]:  # add other voices you actually use in production
+    for voice in WARMUP_VOICES:
         for text in WARMUP_PROMPTS:
             try:
-                await run_tts_request(
-                    text=text,
-                    voice=voice,
-                    repetition_penalty=1.2,   # match SvaraTTSService default exactly
-                    max_tokens=150 + len(text) * 15,  # match _estimate_max_tokens
-                )
+                prompt = svara_prompt(text, voice)
+                async for _ in orchestrator.astream(
+                    text,
+                    prompt=prompt,
+                    repetition_penalty=WARMUP_REPETITION_PENALTY,
+                    max_tokens=150 + len(text) * 15,
+                ):
+                    pass  # discard audio — we only need the kernels compiled
+                logger.info(f"Warmup OK: voice={voice!r} text={text[:30]!r}")
             except Exception as e:
-                logger.warning(f"Warmup request failed (non-fatal): {e}")
+                logger.warning(
+                    f"Warmup request failed (non-fatal): voice={voice!r} "
+                    f"text={text[:30]!r} error={e}"
+                )
     logger.info("TTS engine warmup complete")
+
 
 # ============================================================================
 # Application Lifecycle
@@ -82,13 +120,13 @@ async def warmup_tts_engine():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize and cleanup resources."""
-    global orchestrator, tokenizer
-    
+    global orchestrator, tokenizer, app_ready
+
     print(f"🚀 Initializing Svara TTS API...")
     print(f"   vLLM URL: {VLLM_BASE_URL}")
     print(f"   Model: {VLLM_MODEL}")
     print(f"   Device: {TTS_DEVICE or 'auto-detect'}")
-    
+
     # Initialize orchestrator with default settings
     # We'll create new instances per request with specific voice settings
     orchestrator = SvaraTTSOrchestrator(
@@ -100,17 +138,24 @@ async def lifespan(app: FastAPI):
         concurrent_decode=True,
         max_workers=2,
     )
-    
+
     # Load tokenizer for zero-shot voice cloning
     print(f"📦 Loading tokenizer for {VLLM_MODEL}...")
     tokenizer = AutoTokenizer.from_pretrained(VLLM_MODEL)
     print(f"✓ Tokenizer loaded")
-    
+
     print(f"✓ Orchestrator initialized")
     print(f"✓ Loaded {len(get_all_voices())} voices")
-    
+
+    # Warm up sampling kernels using the exact params production uses,
+    # BEFORE marking the server ready. /health returns 503 until this
+    # finishes, so upstream routing won't send live calls into a cold engine.
+    await warmup_tts_engine()
+    app_ready = True
+    print(f"✓ Warmup complete — server ready")
+
     yield
-    
+
     print("🛑 Shutting down Svara TTS API...")
 
 
@@ -130,30 +175,24 @@ app = FastAPI(
 # Endpoints
 # ============================================================================
 
-# @app.get("/health")
-# async def health_check():
-#     """Health check endpoint for container orchestration."""
-#     return {
-#         "status": "healthy",
-#         "model": VLLM_MODEL,
-#         "vllm_url": VLLM_BASE_URL,
-#     }
-
-app_ready = False
-
 @app.get("/health")
 async def health():
+    """
+    Health check endpoint for container orchestration.
+
+    Returns 503 until the orchestrator is initialized AND warmup has
+    finished, so callers (Vobiz / load balancer / agent) won't route real
+    traffic to a cold engine.
+    """
     if not app_ready:
         return JSONResponse(status_code=503, content={"status": "warming_up"})
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "model": VLLM_MODEL,
+        "vllm_url": VLLM_BASE_URL,
+    }
 
-@app.on_event("startup")
-async def on_startup():
-    await wait_for_vllm_engine_ready()
-    await warmup_tts_engine()
-    global app_ready
-    app_ready = True
-    
+
 @app.get("/v1/voices", response_model=VoicesResponse)
 async def get_voices(model_id: Optional[str] = None):
     """
@@ -601,4 +640,3 @@ if __name__ == "__main__":
         reload=False,
         log_level="info",
     )
-
