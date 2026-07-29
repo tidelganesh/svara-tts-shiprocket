@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from typing import Iterator, AsyncIterator, List, Optional, Literal, Union
 import concurrent.futures
@@ -86,12 +85,22 @@ class SvaraTTSOrchestrator:
         audio_buf = AudioBuffer(self.prebuffer_samples)
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) if self.concurrent_decode else None
         pending: List[concurrent.futures.Future] = []
+        # Tracks whether the next window submitted is the very first one for
+        # this utterance. The first window has no genuine left-side overlap
+        # context (unlike windows 2+, which share 3 frames of real overlap
+        # with the previous window), so its decode can carry a boundary
+        # artifact even after the usual [2048:4096] trim. Using a
+        # single-element list as a mutable cell so the inner closures below
+        # can flip it without needing `nonlocal`.
+        is_first_window = [True]
 
-        def decode(win: List[int]) -> bytes:
-            return self.codec.decode_window(win)
+        def decode(win: List[int], first: bool) -> bytes:
+            return self.codec.decode_window(win, is_first_window=first)
 
         def submit(win: List[int]):
-            return executor.submit(decode, win) if executor else SyncFuture(decode(win))
+            first = is_first_window[0]
+            is_first_window[0] = False
+            return executor.submit(decode, win, first) if executor else SyncFuture(decode(win, first))
 
         try:
             for token_text in self.transport.stream(prompt, **gen_kwargs):
@@ -153,15 +162,20 @@ class SvaraTTSOrchestrator:
         loop = asyncio.get_running_loop()
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) if self.concurrent_decode else None
         pending: List[asyncio.Task] = []
+        # Same first-window tracking as the sync path above — see comment
+        # there for why the first window needs special handling.
+        is_first_window = [True]
 
-        def decode(win: List[int]) -> bytes:
-            return self.codec.decode_window(win)
+        def decode(win: List[int], first: bool) -> bytes:
+            return self.codec.decode_window(win, is_first_window=first)
 
         async def submit_async(win: List[int]) -> bytes:
+            first = is_first_window[0]
+            is_first_window[0] = False
             if executor:
-                return await loop.run_in_executor(executor, decode, win)
+                return await loop.run_in_executor(executor, decode, win, first)
             else:
-                return decode(win)
+                return decode(win, first)
 
         try:
             async for token_text in self.transport_async.astream(prompt, **gen_kwargs):
